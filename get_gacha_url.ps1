@@ -1,31 +1,18 @@
 # Configuration
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+Add-Type -AssemblyName System.Web  # For query string parsing
 
 $Config = @{
   UserAgent = "Mozilla/5.0"
   AppCode = @{
-    AccountService = "d9f6dbb6bbd6bb33"
-    Binding        = "3dacefa138426cfe"
-    U8             = "973bd727dd11cbb6ead8"
+    U8 = "973bd727dd11cbb6ead8"
   }
   Channel = 6
   BaseUrl = @{
-    AccountService = "https://as.gryphline.com"
-    U8             = "https://u8.gryphline.com"
-    BindingApi     = "https://binding-api-account-prod.gryphline.com"
-    Webview        = "https://ef-webview.gryphline.com"
+    U8      = "https://u8.gryphline.com"
+    Webview = "https://ef-webview.gryphline.com"
   }
   ApiLanguage = "en-us"
-}
-
-function Get-PlainText {
-  param([System.Security.SecureString]$SecureString)
-  $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
-  try {
-    return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($BSTR)
-  } finally {
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-  }
 }
 
 function Invoke-ApiRequest {
@@ -45,7 +32,6 @@ function Invoke-ApiRequest {
     "User-Agent" = $Config.UserAgent
   }
 
-  # Use UriBuilder for safe URI construction
   try {
     $UriBuilder = [System.UriBuilder]$Uri
   } catch {
@@ -88,139 +74,99 @@ function Invoke-ApiRequest {
   }
 }
 
-# Write-Host "=== Arknights: Endfield Gacha Link Generator ===" -ForegroundColor Cyan
+Write-Host "=== Arknights: Endfield Gacha Link Generator ===" -ForegroundColor Cyan
 
-# Get Account Service Token
-$AsToken = Read-Host "Enter AS access token (Leave empty to login with Email/Password)"
+# Log file path
+$LogPath = "$env:USERPROFILE\AppData\LocalLow\Gryphline\Endfield\sdklogs\HGWebview.log"
 
-if ([string]::IsNullOrWhiteSpace($AsToken)) {
-  $Email = Read-Host "Enter email"
-  $SecurePass = Read-Host "Enter password" -AsSecureString
-  $Password = Get-PlainText $SecurePass
-
-  Write-Host "Logging in ..." -ForegroundColor Yellow
-  $LoginRsp = Invoke-ApiRequest -Uri "$($Config.BaseUrl['AccountService'])/user/auth/v1/token_by_email_password" -Method "POST" -Body @{
-    email    = $Email
-    password = $Password
-    from     = 0
-  }
-  $AsToken = $LoginRsp.data.token
-  Write-Host "Login successful." -ForegroundColor Green
-}
-
-# Get OAuth2 Code for U8 (Type 0)
-Write-Host "Getting OAuth2 code for game service ..." -ForegroundColor Yellow
-$OauthU8Rsp = Invoke-ApiRequest -Uri "$($Config.BaseUrl['AccountService'])/user/oauth2/v2/grant" -Method "POST" -Body @{
-  appCode = $Config.AppCode.AccountService
-  token   = $AsToken
-  type    = 0
-}
-$OauthCode = $OauthU8Rsp.data.code
-
-# Get OAuth2 Token for Binding (Type 1)
-Write-Host "Getting OAuth2 token for Binding API..." -ForegroundColor Yellow
-$OauthBindRsp = Invoke-ApiRequest -Uri "$($Config.BaseUrl['AccountService'])/user/oauth2/v2/grant" -Method "POST" -Body @{
-  appCode = $Config.AppCode.Binding
-  token   = $AsToken
-  type    = 1
-}
-$BindingToken = $OauthBindRsp.data.token
-
-# Get U8 Token
-Write-Host "Getting U8 access token ..." -ForegroundColor Yellow
-$ChannelTokenJson = @{
-  code  = $OauthCode
-  type  = 1
-  isSuc = $true
-} | ConvertTo-Json -Compress
-
-$U8AuthRsp = Invoke-ApiRequest -Uri "$($Config.BaseUrl['U8'])/u8/user/auth/v2/token_by_channel_token" -Method "POST" -Body @{
-  appCode         = $Config.AppCode.U8
-  channelMasterId = $Config.Channel
-  channelToken    = $ChannelTokenJson
-  type            = 0
-  platform        = 2
-}
-$U8Token = $U8AuthRsp.data.token
-
-# Get Binding List to find Server ID
-Write-Host "Retrieving game data list ..." -ForegroundColor Yellow
-$BindingListRsp = Invoke-ApiRequest -Uri "$($Config.BaseUrl['BindingApi'])/account/binding/v1/binding_list" -Method "GET" -Query @{
-  token = $BindingToken
-}
-
-$EndfieldApp = $BindingListRsp.data.list | Where-Object { $_.appCode -eq "endfield" }
-if (-not $EndfieldApp) {
-  Write-Error "No Endfield game data found."
+if (-not (Test-Path $LogPath)) {
+  Write-Error "Log file not found at: $LogPath`nPlease launch the game and open gacha history at least once."
   exit 1
 }
 
-# Find all valid roles
-$ValidRoles = @()
-foreach ($BindItem in $EndfieldApp.bindingList) {
-  foreach ($Role in $BindItem.roles) {
-    if (-not $Role.isBanned) {
-      $ValidRoles += $Role
-    }
-  }
-}
+Write-Host "Reading log file: $LogPath" -ForegroundColor Yellow
+$Content = Get-Content $LogPath -Raw
 
-if ($ValidRoles.Count -eq 0) {
-  Write-Error "No valid game data found."
+if ([string]::IsNullOrWhiteSpace($Content)) {
+  Write-Error "Log file is empty. Please launch the game and open gacha history first."
   exit 1
 }
 
-if ($ValidRoles.Count -gt 1) {
-  # User Selection
-  Write-Host "`nAvailable game data:" -ForegroundColor Cyan
-  for ($i = 0; $i -lt $ValidRoles.Count; $i++) {
-    $R = $ValidRoles[$i]
-    Write-Host "[$($i + 1)] Name: $($R.nickName) (Lv.$($R.level)) | Server ID: $($R.serverId)"
+# Extract URLs with u8_token (using safe regex pattern with proper quote escaping)
+$Pattern = 'https://ef-webview\.gryphline\.com[^\s''"<>]*u8_token=[^&\s''"<>]+[^\s''"<>]*'
+$Matches = [regex]::Matches($Content, $Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+if ($Matches.Count -eq 0) {
+  Write-Error "No valid gacha history URL found in log.`nPlease open gacha history in-game first."
+  exit 1
+}
+
+# Use the LAST match (most recent entry)
+$LastUrl = $Matches[$Matches.Count - 1].Value
+Write-Host "Found gacha link in log file." -ForegroundColor Green
+
+# Parse query parameters safely
+try {
+  $Uri = [System.Uri]$LastUrl
+  $Query = [System.Web.HttpUtility]::ParseQueryString($Uri.Query)
+  $U8Token = $Query["u8_token"]
+  $ServerId = $Query["server"]
+
+  if ([string]::IsNullOrWhiteSpace($U8Token)) {
+    throw "u8_token parameter missing in URL"
   }
-
-  do {
-    $Selection = Read-Host "Select (1-$($ValidRoles.Count))"
-    $Index = $Selection -as [int]
-  } until ($Index -ge 1 -and $Index -le $ValidRoles.Count)
-
-  $SelectedRole = $ValidRoles[$Index - 1]
-} else {
-  $SelectedRole = $ValidRoles[0]
+  if ([string]::IsNullOrWhiteSpace($ServerId)) {
+    throw "server parameter missing in URL"
+  }
+} catch {
+  Write-Error "Failed to parse URL parameters: $_`nURL: $LastUrl"
+  exit 1
 }
 
-$ServerId = $SelectedRole.serverId
-Write-Host "Selected game data: $($SelectedRole.nickName) (Lv.$($SelectedRole.level)) on Server ID $ServerId" -ForegroundColor Green
+# Write-Host "Extracted credentials:" -ForegroundColor Yellow
+# Write-Host "  Server ID: $ServerId" -ForegroundColor White
+# Write-Host "  Token length: $($U8Token.Length) characters" -ForegroundColor White
 
-# Confirm Server (Required to activate session for this server)
-Write-Host "Confirming server selection ..." -ForegroundColor Yellow
-$null = Invoke-ApiRequest -Uri "$($Config.BaseUrl['U8'])/game/role/v1/confirm_server" -Method "POST" -Body @{
-  token    = $U8Token
-  serverId = [string]$ServerId
+# Confirm server session (required for API access)
+Write-Host "`nConfirming server session ..." -ForegroundColor Yellow
+try {
+  $null = Invoke-ApiRequest -Uri "$($Config.BaseUrl['U8'])/game/role/v1/confirm_server" -Method "POST" -Body @{
+    token    = $U8Token
+    serverId = [string]$ServerId
+  }
+  Write-Host "Server session confirmed." -ForegroundColor Green
+} catch {
+  Write-Error "Server confirmation failed. Token may be expired.`nPlease reopen gacha history in-game and retry."
+  exit 1
 }
 
-# Generate Link
+# Generate gacha history URL
 $EncodedToken = [System.Uri]::EscapeDataString($U8Token)
 $EncodedServerId = [System.Uri]::EscapeDataString([string]$ServerId)
 $GachaUrl = "$($Config.BaseUrl['Webview'])/api/record/char?server_id=$EncodedServerId&pool_type=E_CharacterGachaPoolType_Standard&lang=$($Config.ApiLanguage)&token=$EncodedToken"
 
+# Verify URL accessibility
 Write-Host "Verifying generated link ..." -ForegroundColor Yellow
 try {
-  $VerifyRsp = Invoke-RestMethod -Uri $GachaUrl -Method GET
+  $VerifyRsp = Invoke-RestMethod -Uri $GachaUrl -Method GET -TimeoutSec 10
   if ($VerifyRsp.code -eq 40100) {
-    Write-Error "Verification Failed: Token is invalid"
+    Write-Error "Verification failed: Token is invalid or expired"
+    Write-Host "Please reopen gacha history in-game and run this script again." -ForegroundColor Yellow
     exit 1
   } elseif ($null -ne $VerifyRsp.code -and $VerifyRsp.code -ne 0) {
-    Write-Warning "Verification returned unexpected code: $($VerifyRsp.code) Msg: $($VerifyRsp.msg)"
+    Write-Warning "Verification warning: Code $($VerifyRsp.code) - $($VerifyRsp.msg)"
   } else {
     Write-Host "Verification successful." -ForegroundColor Green
   }
 } catch {
-  Write-Warning "Verification request failed: $_"
+  Write-Warning "Verification request failed (this may be normal for some regions): $_"
 }
 
+# Output final URL
 Write-Host "`n=== Gacha History URL ===" -ForegroundColor Cyan
 Write-Host $GachaUrl -ForegroundColor White
 Write-Host "=========================`n" -ForegroundColor Cyan
 
 Set-Clipboard -Value $GachaUrl
 Write-Host "URL copied to clipboard!" -ForegroundColor Green
+# Write-Host "Open this URL in your browser to view gacha history." -ForegroundColor Yellow

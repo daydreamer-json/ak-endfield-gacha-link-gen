@@ -10,12 +10,6 @@ Launch Windows PowerShell, paste the following code, and press Enter.
 Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex "&{$((New-Object System.Net.WebClient).DownloadString('https://github.com/daydreamer-json/ak-endfield-gacha-link-gen/raw/refs/heads/main/get_gacha_url.ps1'))}"
 ```
 
-Access requires authentication using either a Gryphline AS (Account Service) access token or your Gryphline account email address and password.  
-Using an AS access token is safer because it prevents blocking by reCAPTCHA.  
-If you don't know what an access token is, please use email address and password authentication.
-
-After entering the required information and completing authentication, select the game data linked to your account. (if there is only one, it will be selected automatically)
-
 The gacha history URL will be automatically copied to your clipboard.
 
 ## Gacha history URL structure
@@ -41,7 +35,6 @@ If you have any suggestions or proposals for improving the URL acquisition metho
 
 ## To-do
 
-- Exploring methods for obtaining history URLs without auth
 - CN server methods
 
 ## Disclaimer
